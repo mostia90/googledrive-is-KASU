@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>KASU Sound</title>
+<meta name="description" content="演劇本番用のオフライン音響再生アプリ">
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#0b0e14">
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark" aria-hidden="true">▶</span>
+    <span class="brand-name">KASU Sound</span>
+  </div>
+  <div id="ready-badge" class="badge badge-wait" title="ローカル保存済み／再生準備が完了したキュー数">準備中…</div>
+  <div class="spacer"></div>
+  <button id="btn-drive" class="btn" type="button">Driveから取り込み</button>
+  <button id="btn-local" class="btn" type="button">ファイルから追加</button>
+  <button id="btn-settings" class="btn btn-ghost" type="button" title="設定">⚙ 設定</button>
+  <input id="file-input" type="file" accept="audio/*,.mp3,.wav,.m4a,.aac,.ogg,.flac" multiple hidden>
+</header>
+
+<main class="layout" id="drop-zone">
+
+  <!-- ============ 左：キューリスト ============ -->
+  <section class="pane pane-list">
+    <div class="pane-head">
+      <h2>キューリスト</h2>
+      <span id="cue-count" class="muted">0 キュー</span>
+    </div>
+
+    <ol id="cuelist" class="cuelist" tabindex="0" aria-label="キューリスト"></ol>
+
+    <p id="empty-hint" class="empty-hint">
+      ここに音声ファイルをドラッグ＆ドロップ<br>
+      または上の「Driveから取り込み」
+    </p>
+
+    <div class="list-tools">
+      <button id="btn-up" class="btn btn-sm" type="button" title="上へ">↑</button>
+      <button id="btn-down" class="btn btn-sm" type="button" title="下へ">↓</button>
+      <button id="btn-rename" class="btn btn-sm" type="button">名前変更</button>
+      <button id="btn-remove" class="btn btn-sm btn-danger" type="button">削除</button>
+    </div>
+  </section>
+
+  <!-- ============ 右：再生状況＋キュー設定 ============ -->
+  <section class="pane pane-main">
+
+    <div class="card now-playing">
+      <div class="card-label">NOW PLAYING</div>
+      <div id="np-name" class="np-name">—</div>
+      <div class="np-row">
+        <div id="np-time" class="np-time">00:00 / 00:00</div>
+        <div class="np-actions">
+          <button id="btn-fade-current" class="btn btn-sm" type="button">フェードアウト</button>
+          <button id="btn-stop-current" class="btn btn-sm" type="button">停止</button>
+        </div>
+      </div>
+      <div class="progress"><div id="np-bar" class="progress-fill"></div></div>
+    </div>
+
+    <div class="card">
+      <div class="card-label">再生中（同時再生）</div>
+      <ul id="voices" class="voices"></ul>
+      <p id="voices-empty" class="muted small">再生中の音はありません。</p>
+    </div>
+
+    <div class="card" id="cue-editor" hidden>
+      <div class="card-label">選択中のキューの設定</div>
+      <div id="ce-name" class="ce-name">—</div>
+      <div id="ce-file" class="muted small"></div>
+
+      <label class="field">
+        <span class="field-label">音量 <b id="ce-vol-val">100%</b></span>
+        <input id="ce-vol" type="range" min="0" max="150" step="1" value="100">
+      </label>
+
+      <div class="field-grid">
+        <label class="field">
+          <span class="field-label">フェードイン（秒）</span>
+          <input id="ce-fadein" type="number" min="0" max="60" step="0.1" value="0">
+        </label>
+        <label class="field">
+          <span class="field-label">フェードアウト（秒）</span>
+          <input id="ce-fadeout" type="number" min="0" max="60" step="0.1" value="2">
+        </label>
+      </div>
+
+      <label class="field">
+        <span class="field-label">読み込み方式</span>
+        <select id="ce-mode">
+          <option value="auto">自動（推奨）</option>
+          <option value="buffer">メモリ展開（最速・短い音向け）</option>
+          <option value="stream">ストリーミング（長いBGM向け）</option>
+        </select>
+      </label>
+      <p id="ce-mode-note" class="muted small"></p>
+
+      <div class="ce-actions">
+        <button id="btn-preview" class="btn btn-sm">このキューを再生</button>
+        <button id="btn-set-next" class="btn btn-sm btn-ghost">NEXTに指定</button>
+      </div>
+    </div>
+
+  </section>
+</main>
+
+<!-- ============ 下：トランスポート ============ -->
+<footer class="transport">
+  <div class="next-box">
+    <span class="next-label">NEXT</span>
+    <span id="next-name" class="next-name">—</span>
+  </div>
+
+  <button id="btn-go" class="btn btn-go" type="button">GO ▶<span class="key">SPACE</span></button>
+  <button id="btn-stopall" class="btn btn-stop" type="button">全停止<span class="key">ESC</span></button>
+
+  <div class="transport-right">
+    <label class="toggle" title="キューを選んだ／取り込んだときに自動で再生します">
+      <input id="chk-autoplay" type="checkbox">
+      <span>自動再生</span>
+    </label>
+    <label class="master">
+      <span>マスター <b id="master-val">100%</b></span>
+      <input id="master-vol" type="range" min="0" max="100" step="1" value="100">
+    </label>
+  </div>
+</footer>
+
+<!-- ============ 設定ダイアログ ============ -->
+<dialog id="dlg-settings" class="dlg">
+  <form method="dialog" class="dlg-body">
+    <h2>設定</h2>
+
+    <h3>再生</h3>
+    <label class="field check">
+      <input id="set-autoplay" type="checkbox">
+      <span>キューを選んだとき／取り込んだときに自動で再生する</span>
+    </label>
+    <div class="field-grid">
+      <label class="field">
+        <span class="field-label">既定のフェードイン（秒）</span>
+        <input id="set-fadein" type="number" min="0" max="60" step="0.1">
+      </label>
+      <label class="field">
+        <span class="field-label">既定のフェードアウト（秒）</span>
+        <input id="set-fadeout" type="number" min="0" max="60" step="0.1">
+      </label>
+    </div>
+    <label class="field">
+      <span class="field-label">「自動」でメモリ展開する上限の長さ（秒）</span>
+      <input id="set-threshold" type="number" min="5" max="1200" step="5">
+    </label>
+    <p class="muted small">これより短い音は完全にメモリへ展開し、遅延をほぼゼロにします。長い曲はストリーミング再生になります。</p>
+
+    <h3>Google Drive 連携</h3>
+    <p class="muted small">Google Cloud で作成した値を貼り付けてください。手順は README を参照。</p>
+    <label class="field">
+      <span class="field-label">OAuth クライアント ID</span>
+      <input id="set-client-id" type="text" placeholder="000000000000-xxxxxxxx.apps.googleusercontent.com" spellcheck="false">
+    </label>
+    <label class="field">
+      <span class="field-label">API キー</span>
+      <input id="set-api-key" type="text" placeholder="AIza..." spellcheck="false">
+    </label>
+    <p class="muted small">アプリ ID（プロジェクト番号）はクライアント ID から自動で判定します。</p>
+
+    <h3>保存・持ち出し</h3>
+    <div class="btn-row">
+      <button id="btn-export-pack" class="btn btn-sm" type="button">バックアップ（音源込み）を書き出す</button>
+      <button id="btn-import-pack" class="btn btn-sm" type="button">バックアップを読み込む</button>
+    </div>
+    <div class="btn-row">
+      <button id="btn-export-json" class="btn btn-sm btn-ghost" type="button">設定だけ書き出す（軽量）</button>
+      <button id="btn-import-json" class="btn btn-sm btn-ghost" type="button">設定だけ読み込む</button>
+    </div>
+    <input id="pack-input" type="file" accept=".kasupack" hidden>
+    <input id="json-input" type="file" accept=".json,application/json" hidden>
+
+    <h3>ストレージ</h3>
+    <p id="storage-info" class="muted small">—</p>
+    <div class="btn-row">
+      <button id="btn-persist" class="btn btn-sm btn-ghost" type="button">保存領域を保護する</button>
+      <button id="btn-update-app" class="btn btn-sm btn-ghost" type="button">アプリを更新</button>
+    </div>
+
+    <menu class="dlg-foot">
+      <button id="btn-settings-close" class="btn" value="close">閉じる</button>
+    </menu>
+  </form>
+</dialog>
+
+<div id="toast" class="toast" hidden></div>
+<div id="busy" class="busy" hidden><div class="busy-box"><div class="spinner"></div><span id="busy-text">処理中…</span></div></div>
+
+<script type="module" src="js/main.js"></script>
+</body>
+</html>
