@@ -9,13 +9,16 @@
 //   3. 最初の操作時に resume() ＋ 無音を 1 回鳴らして経路を温める
 //
 //  信号の流れ
-//      音源 ─> voiceGain（曲ごとの音量／フェード） ─> master ─> スピーカー
+//      音源 ─> voiceGain（曲ごとの音量／フェード）
+//                 ─> groupGain（リストごとの音量）
+//                      ─> master ─> スピーカー
 // ============================================================
 
 export class AudioEngine {
   constructor() {
     this.ctx = null;
     this.master = null;
+    this.groups = new Map();   // listId -> GainNode
     this.loaded = new Map();   // cueId -> { mode, buffer|el, node, gain, duration }
     this.voices = new Map();   // voiceId -> voice
     this.seq = 0;
@@ -39,7 +42,6 @@ export class AudioEngine {
     if (this.ctx.state !== "running") {
       try { await this.ctx.resume(); } catch { /* 無視 */ }
     }
-    // 無音を 1 サンプルだけ流してハードウェア経路を確定させる
     try {
       const b = this.ctx.createBuffer(1, 1, this.ctx.sampleRate);
       const s = this.ctx.createBufferSource();
@@ -51,16 +53,39 @@ export class AudioEngine {
 
   get outputLatencyMs() {
     if (!this.ctx) return null;
-    const base = this.ctx.baseLatency || 0;
-    const out = this.ctx.outputLatency || 0;
-    return Math.round((base + out) * 1000);
+    return Math.round(((this.ctx.baseLatency || 0) + (this.ctx.outputLatency || 0)) * 1000);
+  }
+
+  // ---------- リスト（グループ）ごとの音量 ----------
+  group(listId) {
+    this.init();
+    const key = listId || "default";
+    let g = this.groups.get(key);
+    if (!g) {
+      g = this.ctx.createGain();
+      g.gain.value = 1;
+      g.connect(this.master);
+      this.groups.set(key, g);
+    }
+    return g;
+  }
+
+  setGroupVolume(listId, v) {
+    const g = this.group(listId).gain;
+    const now = this.ctx.currentTime;
+    g.cancelScheduledValues(now);
+    g.setTargetAtTime(clamp(v, 0, 1.5), now, 0.01);
+  }
+
+  /** キューを別のリストへ移したときに、ストリーム音源の接続先を張り替える */
+  setCueGroup(cueId, listId) {
+    const l = this.loaded.get(cueId);
+    if (!l || l.mode !== "stream") return;
+    try { l.gain.disconnect(); } catch { /* 無視 */ }
+    l.gain.connect(this.group(listId));
   }
 
   // ---------- 読み込み ----------
-  /**
-   * 音声を再生可能な状態にする。
-   * @returns {{mode:'buffer'|'stream', duration:number, bytes:number}}
-   */
   async prepare(cue, blob, thresholdSec) {
     this.init();
     this.unload(cue.id);
@@ -87,11 +112,10 @@ export class AudioEngine {
     const el = new Audio();
     el.src = probeUrl;
     el.preload = "auto";
-    el.crossOrigin = "anonymous";
     const node = this.ctx.createMediaElementSource(el);
     const gain = this.ctx.createGain();
     node.connect(gain);
-    gain.connect(this.master);
+    gain.connect(this.group(cue.listId));
     el.load();
     el.addEventListener("ended", () => {
       for (const [vid, v] of this.voices) if (v.cueId === cue.id) this._drop(vid);
@@ -115,7 +139,6 @@ export class AudioEngine {
   isReady(cueId) { return this.loaded.has(cueId); }
   info(cueId) { return this.loaded.get(cueId) || null; }
 
-  /** メモリ展開している音声の合計バイト数 */
   memoryBytes() {
     let n = 0;
     for (const l of this.loaded.values()) n += l.bytes || 0;
@@ -123,8 +146,13 @@ export class AudioEngine {
   }
 
   // ---------- 再生 ----------
-  /** @returns voiceId または null */
-  play(cue) {
+  /**
+   * @param cue  キュー（listId / volume / fadeIn / fadeOut / startSec / endSec を見る）
+   * @param opts {ignoreTrim:bool, offset:number|null, noFade:bool}
+   *             試聴では ignoreTrim:true, noFade:true で丸ごと鳴らす
+   * @returns voiceId または null
+   */
+  play(cue, opts = {}) {
     const l = this.loaded.get(cue.id);
     if (!l) return null;
     this.init();
@@ -133,18 +161,37 @@ export class AudioEngine {
 
     const now = ctx.currentTime;
     const vol = clamp(cue.volume ?? 1, 0, 1.5);
-    const fadeIn = Math.max(0, cue.fadeIn ?? 0);
+    const useTrim = !opts.ignoreTrim;
+    const total = l.duration || 0;
+
+    const start = clampNum(
+      opts.offset != null ? opts.offset : (useTrim ? (cue.startSec || 0) : 0),
+      0, Math.max(0, total - 0.05));
+    const endRaw = useTrim && cue.endSec ? cue.endSec : null;
+    const playEnd = endRaw != null ? Math.min(endRaw, total || endRaw) : total;
+    const playLen = playEnd > start ? playEnd - start : null;   // null = 最後まで
+
+    const fadeIn = opts.noFade ? 0 : Math.max(0, cue.fadeIn ?? 0);
+    // 終了位置を指定したときだけ、その手前で自動フェードアウトする
+    const autoFadeOut = (!opts.noFade && endRaw != null && playLen)
+      ? Math.min(Math.max(0, cue.fadeOut ?? 0), playLen * 0.9) : 0;
+
     const id = "v" + ++this.seq;
+    const timers = [];
 
     if (l.mode === "buffer") {
       const src = ctx.createBufferSource();
       src.buffer = l.buffer;
       const gain = ctx.createGain();
       src.connect(gain);
-      gain.connect(this.master);
-      applyFadeIn(gain.gain, now, vol, fadeIn);
-      src.start(now);                       // ← ここが「押した瞬間に鳴る」部分
-      const voice = { id, cueId: cue.id, kind: "buffer", src, gain, startedAt: now, duration: l.duration, vol };
+      gain.connect(this.group(cue.listId));
+      applyEnvelope(gain.gain, now, vol, fadeIn, playLen, autoFadeOut);
+      if (playLen != null) src.start(now, start, playLen);
+      else src.start(now, start);          // ← ここが「押した瞬間に鳴る」部分
+      const voice = {
+        id, cueId: cue.id, listId: cue.listId, kind: "buffer", src, gain,
+        startedAt: now, startOffset: start, playEnd: playEnd || total, timers,
+      };
       src.onended = () => this._drop(id);
       this.voices.set(id, voice);
     } else {
@@ -152,11 +199,22 @@ export class AudioEngine {
       this.stopCue(cue.id, 0);
       l.gen = (l.gen || 0) + 1;      // 古いフェードアウトの後始末が
       const gain = l.gain;           // この再生を止めないようにする印
-      applyFadeIn(gain.gain, now, vol, fadeIn);
-      try { l.el.currentTime = 0; } catch { /* 無視 */ }
+      applyEnvelope(gain.gain, now, vol, fadeIn, playLen, autoFadeOut);
+      try { l.el.currentTime = start; } catch { /* 無視 */ }
       const p = l.el.play();
       if (p && p.catch) p.catch(() => {});
-      const voice = { id, cueId: cue.id, kind: "stream", el: l.el, gain, gen: l.gen, startedAt: now, duration: l.duration, vol };
+      const voice = {
+        id, cueId: cue.id, listId: cue.listId, kind: "stream", el: l.el, gain, gen: l.gen,
+        startedAt: now, startOffset: start, playEnd: playEnd || total, timers,
+      };
+      if (playLen != null && endRaw != null) {
+        timers.push(setTimeout(() => {
+          if (this.voices.get(id) === voice) {
+            try { l.el.pause(); l.el.currentTime = start; } catch { /* 無視 */ }
+            this._drop(id);
+          }
+        }, playLen * 1000 + 20));
+      }
       this.voices.set(id, voice);
     }
     this.onChange();
@@ -166,7 +224,7 @@ export class AudioEngine {
   /** 1 音を止める。fadeSec 秒かけて消す。 */
   stopVoice(voiceId, fadeSec = 0) {
     const v = this.voices.get(voiceId);
-    if (!v) return;
+    if (!v || v.stopping) return;
     const ctx = this.ctx;
     const now = ctx.currentTime;
     const g = v.gain.gain;
@@ -179,6 +237,9 @@ export class AudioEngine {
     } catch { /* 無視 */ }
 
     v.stopping = true;
+    for (const t of v.timers) clearTimeout(t);
+    v.timers.length = 0;
+
     const finish = () => {
       if (v.kind === "buffer") {
         try { v.src.stop(); } catch { /* 無視 */ }
@@ -191,7 +252,7 @@ export class AudioEngine {
       }
       this._drop(voiceId);
     };
-    if (f > 0) setTimeout(finish, f * 1000 + 30);
+    if (f > 0) v.timers.push(setTimeout(finish, f * 1000 + 30));
     else finish();
     this.onChange();
   }
@@ -200,11 +261,14 @@ export class AudioEngine {
     for (const [id, v] of this.voices) if (v.cueId === cueId && !v.stopping) this.stopVoice(id, fadeSec);
   }
 
+  /** リスト単位の停止 */
+  stopList(listId, fadeSec = 0) {
+    for (const [id, v] of this.voices) if (v.listId === listId && !v.stopping) this.stopVoice(id, fadeSec);
+  }
+
   stopAll(fadeSec = 0) {
     for (const [id, v] of this.voices) if (!v.stopping) this.stopVoice(id, fadeSec);
   }
-
-  fadeOutAll(fadeSec) { this.stopAll(fadeSec); }
 
   // ---------- 音量 ----------
   setMasterVolume(v) {
@@ -220,7 +284,6 @@ export class AudioEngine {
     const vol = clamp(v, 0, 1.5);
     for (const voice of this.voices.values()) {
       if (voice.cueId !== cueId || voice.stopping) continue;
-      voice.vol = vol;
       const g = voice.gain.gain;
       const now = this.ctx.currentTime;
       g.cancelScheduledValues(now);
@@ -233,32 +296,52 @@ export class AudioEngine {
     const out = [];
     for (const v of this.voices.values()) {
       if (v.stopping) continue;
-      out.push({ id: v.id, cueId: v.cueId, position: this.position(v), duration: v.duration || 0 });
+      out.push({
+        id: v.id, cueId: v.cueId, listId: v.listId,
+        position: this.position(v), end: v.playEnd || 0, start: v.startOffset || 0,
+      });
     }
     return out;
   }
 
   position(v) {
     if (!this.ctx) return 0;
-    if (v.kind === "buffer") return Math.max(0, this.ctx.currentTime - v.startedAt);
+    if (v.kind === "buffer") return (v.startOffset || 0) + Math.max(0, this.ctx.currentTime - v.startedAt);
     return v.el.currentTime || 0;
   }
 
+  voicePosition(voiceId) {
+    const v = this.voices.get(voiceId);
+    return v ? this.position(v) : 0;
+  }
+
   _drop(voiceId) {
+    const v = this.voices.get(voiceId);
+    if (v) for (const t of v.timers) clearTimeout(t);
     if (this.voices.delete(voiceId)) this.onChange();
   }
 }
 
 // ---------- 補助関数 ----------
 function clamp(n, lo, hi) { return Math.min(hi, Math.max(lo, n)); }
+function clampNum(n, lo, hi) { return Number.isFinite(n) ? clamp(n, lo, Math.max(lo, hi)) : lo; }
 
-function applyFadeIn(param, now, vol, fadeIn) {
+/** フェードイン →（必要なら）終了位置手前でフェードアウト、を一度に予約する */
+function applyEnvelope(param, now, vol, fadeIn, playLen, fadeOut) {
+  const target = Math.max(vol, 0.0001);
   param.cancelScheduledValues(now);
   if (fadeIn > 0) {
     param.setValueAtTime(0.0001, now);
-    param.linearRampToValueAtTime(Math.max(vol, 0.0001), now + fadeIn);
+    param.linearRampToValueAtTime(target, now + fadeIn);
   } else {
-    param.setValueAtTime(Math.max(vol, 0.0001), now);
+    param.setValueAtTime(target, now);
+  }
+  if (fadeOut > 0 && playLen != null) {
+    const foStart = now + playLen - fadeOut;
+    if (foStart > now + fadeIn) {
+      param.setValueAtTime(target, foStart);
+      param.linearRampToValueAtTime(0.0001, now + playLen);
+    }
   }
 }
 

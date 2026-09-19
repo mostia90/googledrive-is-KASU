@@ -19,6 +19,20 @@ export const AUDIO_MIME = [
   "audio/ogg", "audio/flac", "audio/x-flac", "audio/webm",
 ].join(",");
 
+// 3 本のキューリスト（名前は画面上で変更できます）
+export const DEFAULT_LISTS = [
+  { id: "L1", name: "BGM", volume: 1 },
+  { id: "L2", name: "効果音", volume: 1 },
+  { id: "L3", name: "セリフ", volume: 1 },
+];
+
+// リストを進めるキー（左から順に割り当て）
+export const LIST_KEYS = [
+  { code: "KeyZ", label: "Z" },
+  { code: "KeyX", label: "X" },
+  { code: "KeyC", label: "C" },
+];
+
 // アプリ全体の初期設定
 export const DEFAULT_SETTINGS = {
   autoPlayOnSelect: false,  // キューを選んだとき自動再生するか

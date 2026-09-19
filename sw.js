@@ -4,7 +4,7 @@
 //  （音源は IndexedDB 側に保存されているので、ここでは扱いません）
 // ============================================================
 
-const CACHE = "kasu-sound-v1";
+const CACHE = "kasu-sound-v2";
 const SHELL = [
   "./",
   "./index.html",
@@ -20,6 +20,7 @@ const SHELL = [
   "./js/drive.js",
   "./js/backup.js",
   "./js/config.js",
+  "./js/project.js",
 ];
 
 self.addEventListener("install", (e) => {
