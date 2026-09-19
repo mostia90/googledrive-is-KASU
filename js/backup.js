@@ -1,13 +1,14 @@
 // ============================================================
 //  保存・読み込み
 //   .kasupack : 音源込みの完全バックアップ（別の Chromebook でもそのまま復元）
-//   .json     : キューの並び・音量・フェードなどの設定だけ（軽量）
+//   .json     : キューの並び・音量・フェード・開始終了位置だけ（軽量）
 //
 //  .kasupack の中身
 //    [ "KASUPK01" 8byte ][ ヘッダ長 4byte LE ][ ヘッダ JSON ][ 音源1 ][ 音源2 ]...
 // ============================================================
 
 import { store } from "./store.js";
+import { allCues, serializeProject } from "./project.js";
 
 const MAGIC = "KASUPK01";
 
@@ -36,20 +37,22 @@ function stamp() {
 
 /** 音源込みバックアップを書き出す */
 export async function exportPack(project, onProgress) {
+  const cues = allCues(project);
   const parts = [];
   const files = [];
   let i = 0;
-  for (const cue of project.cues) {
+  for (const cue of cues) {
     const blob = await store.getBlob(cue.id);
-    if (!blob) continue;
-    files.push({ id: cue.id, bytes: blob.size, type: blob.type || "audio/mpeg" });
-    parts.push(blob);
-    if (onProgress) onProgress(++i / project.cues.length);
+    if (blob) {
+      files.push({ id: cue.id, bytes: blob.size, type: blob.type || "audio/mpeg" });
+      parts.push(blob);
+    }
+    if (onProgress) onProgress(++i / Math.max(1, cues.length));
   }
   const header = JSON.stringify({
-    version: 1,
+    version: 2,
     createdAt: new Date().toISOString(),
-    project: { settings: project.settings, cues: project.cues },
+    project: serializeProject(project),
     files,
   });
   const headerBytes = new TextEncoder().encode(header);
@@ -58,7 +61,7 @@ export async function exportPack(project, onProgress) {
   download(blob, `kasu-backup-${stamp()}.kasupack`);
 }
 
-/** 音源込みバックアップを読み込む。project を返す（呼び出し側で適用） */
+/** 音源込みバックアップを読み込む。生のプロジェクトを返す（呼び出し側で整形） */
 export async function importPack(file) {
   const magic = new TextDecoder().decode(await file.slice(0, 8).arrayBuffer());
   if (magic !== MAGIC) throw new Error("このファイルは KASU Sound のバックアップではありません。");
@@ -78,41 +81,36 @@ export async function importPack(file) {
 
 /** 設定だけ書き出す */
 export function exportJson(project) {
-  const data = {
-    version: 1,
-    createdAt: new Date().toISOString(),
-    settings: project.settings,
-    cues: project.cues.map((c) => ({ ...c, ready: undefined })),
-  };
+  const data = { ...serializeProject(project), createdAt: new Date().toISOString() };
   download(new Blob([JSON.stringify(data, null, 2)], { type: "application/json" }),
     `kasu-settings-${stamp()}.json`);
 }
 
-/** 設定だけ読み込む。既存の音源とはファイル名で照合する。 */
+/**
+ * 設定だけ読み込む。音源は端末に残っているものを ID、無ければファイル名で照合する。
+ * 見つからなかったキューには missing 印を付けて返す。
+ */
 export async function importJson(file, currentProject) {
   const data = JSON.parse(await file.text());
-  if (!Array.isArray(data.cues)) throw new Error("設定ファイルの形式が正しくありません。");
+  const hasLists = Array.isArray(data.lists);
+  if (!hasLists && !Array.isArray(data.cues)) throw new Error("設定ファイルの形式が正しくありません。");
 
   const byName = new Map();
-  for (const c of currentProject.cues) byName.set(c.fileName || c.name, c.id);
-
+  for (const c of allCues(currentProject)) byName.set(c.fileName || c.name, c.id);
   const keys = new Set(await store.allBlobKeys());
-  const cues = data.cues.map((c) => {
-    const hasOwn = keys.has(c.id);
-    if (hasOwn) return { ...c, missing: false };
+
+  const relink = (c) => {
+    if (keys.has(c.id)) return { ...c, missing: false };
     const alt = byName.get(c.fileName || c.name);
     if (alt) return { ...c, id: alt, missing: false };
     return { ...c, missing: true };
-  });
-  return { settings: { ...currentProject.settings, ...data.settings }, cues };
-}
+  };
 
-export function pickLocalFile(accept) {
-  return new Promise((resolve) => {
-    const input = document.createElement("input");
-    input.type = "file";
-    input.accept = accept;
-    input.onchange = () => resolve(input.files[0] || null);
-    input.click();
-  });
+  if (hasLists) {
+    return {
+      settings: data.settings,
+      lists: data.lists.map((l) => ({ ...l, cues: (l.cues || []).map(relink) })),
+    };
+  }
+  return { settings: data.settings, cues: data.cues.map(relink) };
 }

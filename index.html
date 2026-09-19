@@ -26,112 +26,114 @@
   <input id="file-input" type="file" accept="audio/*,.mp3,.wav,.m4a,.aac,.ogg,.flac" multiple hidden>
 </header>
 
-<main class="layout" id="drop-zone">
+<!-- ============ 3 本のキューリスト ============ -->
+<main id="lists" class="layout" aria-label="キューリスト"></main>
 
-  <!-- ============ 左：キューリスト ============ -->
-  <section class="pane pane-list">
-    <div class="pane-head">
-      <h2>キューリスト</h2>
-      <span id="cue-count" class="muted">0 キュー</span>
-    </div>
+<p id="empty-hint" class="empty-hint">
+  音声ファイルをドラッグ＆ドロップ、または上の「Driveから取り込み」
+</p>
 
-    <ol id="cuelist" class="cuelist" tabindex="0" aria-label="キューリスト"></ol>
+<!-- ============ 再生中 ============ -->
+<section class="playing-strip">
+  <span class="strip-label">再生中</span>
+  <ul id="voices" class="voices"></ul>
+  <span id="voices-empty" class="muted small">なし</span>
+</section>
 
-    <p id="empty-hint" class="empty-hint">
-      ここに音声ファイルをドラッグ＆ドロップ<br>
-      または上の「Driveから取り込み」
-    </p>
+<!-- ============ 選択中のキューの設定 ============ -->
+<section id="editor" class="editor">
+  <button id="editor-toggle" class="editor-head" type="button" aria-expanded="true">
+    <span class="editor-title">選択中のキュー：<b id="ed-name">—</b></span>
+    <span id="ed-file" class="muted small"></span>
+    <span class="editor-caret">▼</span>
+  </button>
 
-    <div class="list-tools">
-      <button id="btn-up" class="btn btn-sm" type="button" title="上へ">↑</button>
-      <button id="btn-down" class="btn btn-sm" type="button" title="下へ">↓</button>
-      <button id="btn-rename" class="btn btn-sm" type="button">名前変更</button>
-      <button id="btn-remove" class="btn btn-sm btn-danger" type="button">削除</button>
-    </div>
-  </section>
+  <div id="editor-body" class="editor-body">
+    <div class="ed-grid">
 
-  <!-- ============ 右：再生状況＋キュー設定 ============ -->
-  <section class="pane pane-main">
-
-    <div class="card now-playing">
-      <div class="card-label">NOW PLAYING</div>
-      <div id="np-name" class="np-name">—</div>
-      <div class="np-row">
-        <div id="np-time" class="np-time">00:00 / 00:00</div>
-        <div class="np-actions">
-          <button id="btn-fade-current" class="btn btn-sm" type="button">フェードアウト</button>
-          <button id="btn-stop-current" class="btn btn-sm" type="button">停止</button>
+      <!-- 左：試聴と開始／終了位置 -->
+      <div class="ed-col">
+        <div class="ed-row">
+          <button id="btn-preview" class="btn btn-sm" type="button">▶ 試聴</button>
+          <button id="btn-preview-stop" class="btn btn-sm" type="button">■</button>
+          <span id="ed-pos" class="mono">0:00.0</span>
+          <span class="muted small">バーをクリックで頭出し</span>
         </div>
+
+        <div id="ed-bar" class="trimbar" title="クリックした位置から試聴します">
+          <div id="ed-range" class="trim-range"></div>
+          <div id="ed-head" class="trim-head"></div>
+          <div id="ed-mark-start" class="trim-mark"></div>
+          <div id="ed-mark-end" class="trim-mark trim-mark-end"></div>
+        </div>
+
+        <div class="ed-row">
+          <span class="ed-label">開始</span>
+          <input id="ed-start" type="text" class="mono time-input" value="0:00.0" spellcheck="false">
+          <button id="btn-start-here" class="btn btn-sm" type="button">ここ</button>
+          <button id="btn-start-clear" class="btn btn-sm btn-ghost" type="button">頭出し解除</button>
+        </div>
+        <div class="ed-row">
+          <span class="ed-label">終了</span>
+          <input id="ed-end" type="text" class="mono time-input" value="—" spellcheck="false">
+          <button id="btn-end-here" class="btn btn-sm" type="button">ここ</button>
+          <button id="btn-end-clear" class="btn btn-sm btn-ghost" type="button">最後まで</button>
+        </div>
+        <p class="muted small">終了位置を指定すると、その手前でフェードアウト秒数ぶん自然に消えます。</p>
       </div>
-      <div class="progress"><div id="np-bar" class="progress-fill"></div></div>
-    </div>
 
-    <div class="card">
-      <div class="card-label">再生中（同時再生）</div>
-      <ul id="voices" class="voices"></ul>
-      <p id="voices-empty" class="muted small">再生中の音はありません。</p>
-    </div>
-
-    <div class="card" id="cue-editor" hidden>
-      <div class="card-label">選択中のキューの設定</div>
-      <div id="ce-name" class="ce-name">—</div>
-      <div id="ce-file" class="muted small"></div>
-
-      <label class="field">
-        <span class="field-label">音量 <b id="ce-vol-val">100%</b></span>
-        <input id="ce-vol" type="range" min="0" max="150" step="1" value="100">
-      </label>
-
-      <div class="field-grid">
+      <!-- 右：音量・フェード・所属リスト -->
+      <div class="ed-col">
         <label class="field">
-          <span class="field-label">フェードイン（秒）</span>
-          <input id="ce-fadein" type="number" min="0" max="60" step="0.1" value="0">
+          <span class="field-label">音量 <b id="ed-vol-val">100%</b></span>
+          <input id="ed-vol" type="range" min="0" max="150" step="1" value="100">
         </label>
-        <label class="field">
-          <span class="field-label">フェードアウト（秒）</span>
-          <input id="ce-fadeout" type="number" min="0" max="60" step="0.1" value="2">
-        </label>
+
+        <div class="field-grid">
+          <label class="field">
+            <span class="field-label">フェードイン（秒）</span>
+            <input id="ed-fadein" type="number" min="0" max="60" step="0.1" value="0">
+          </label>
+          <label class="field">
+            <span class="field-label">フェードアウト（秒）</span>
+            <input id="ed-fadeout" type="number" min="0" max="60" step="0.1" value="2">
+          </label>
+        </div>
+
+        <div class="field-grid">
+          <label class="field">
+            <span class="field-label">所属リスト</span>
+            <select id="ed-list"></select>
+          </label>
+          <label class="field">
+            <span class="field-label">読み込み方式</span>
+            <select id="ed-mode">
+              <option value="auto">自動（推奨）</option>
+              <option value="buffer">メモリ展開（最速）</option>
+              <option value="stream">ストリーミング</option>
+            </select>
+          </label>
+        </div>
+        <p id="ed-mode-note" class="muted small"></p>
       </div>
 
-      <label class="field">
-        <span class="field-label">読み込み方式</span>
-        <select id="ce-mode">
-          <option value="auto">自動（推奨）</option>
-          <option value="buffer">メモリ展開（最速・短い音向け）</option>
-          <option value="stream">ストリーミング（長いBGM向け）</option>
-        </select>
-      </label>
-      <p id="ce-mode-note" class="muted small"></p>
-
-      <div class="ce-actions">
-        <button id="btn-preview" class="btn btn-sm">このキューを再生</button>
-        <button id="btn-set-next" class="btn btn-sm btn-ghost">NEXTに指定</button>
-      </div>
     </div>
-
-  </section>
-</main>
+  </div>
+</section>
 
 <!-- ============ 下：トランスポート ============ -->
 <footer class="transport">
-  <div class="next-box">
-    <span class="next-label">NEXT</span>
-    <span id="next-name" class="next-name">—</span>
-  </div>
-
-  <button id="btn-go" class="btn btn-go" type="button">GO ▶<span class="key">SPACE</span></button>
   <button id="btn-stopall" class="btn btn-stop" type="button">全停止<span class="key">ESC</span></button>
-
-  <div class="transport-right">
-    <label class="toggle" title="キューを選んだ／取り込んだときに自動で再生します">
-      <input id="chk-autoplay" type="checkbox">
-      <span>自動再生</span>
-    </label>
-    <label class="master">
-      <span>マスター <b id="master-val">100%</b></span>
-      <input id="master-vol" type="range" min="0" max="100" step="1" value="100">
-    </label>
-  </div>
+  <div id="key-hints" class="key-hints"></div>
+  <div class="spacer"></div>
+  <label class="toggle" title="キューを選んだ／取り込んだときに自動で再生します">
+    <input id="chk-autoplay" type="checkbox">
+    <span>自動再生</span>
+  </label>
+  <label class="master">
+    <span>マスター <b id="master-val">100%</b></span>
+    <input id="master-vol" type="range" min="0" max="100" step="1" value="100">
+  </label>
 </footer>
 
 <!-- ============ 設定ダイアログ ============ -->
@@ -170,7 +172,6 @@
       <span class="field-label">API キー</span>
       <input id="set-api-key" type="text" placeholder="AIza..." spellcheck="false">
     </label>
-    <p class="muted small">アプリ ID（プロジェクト番号）はクライアント ID から自動で判定します。</p>
 
     <h3>保存・持ち出し</h3>
     <div class="btn-row">
@@ -190,6 +191,9 @@
       <button id="btn-persist" class="btn btn-sm btn-ghost" type="button">保存領域を保護する</button>
       <button id="btn-update-app" class="btn btn-sm btn-ghost" type="button">アプリを更新</button>
     </div>
+
+    <h3>キーボード操作</h3>
+    <ul id="help-keys" class="help-keys"></ul>
 
     <menu class="dlg-foot">
       <button id="btn-settings-close" class="btn" value="close">閉じる</button>
