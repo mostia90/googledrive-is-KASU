@@ -7,6 +7,10 @@
 //      - 長い音 → <audio> を preload 済みにして待機（メモリ節約）
 //   2. AudioContext は latencyHint:"interactive" で生成
 //   3. 最初の操作時に resume() ＋ 無音を 1 回鳴らして経路を温める
+//   4. 聞こえないレベルの無音を鳴らし続け、ChromeOS が音声出力を
+//      閉じてしまわないようにする（時間をおいた後の「頭切れ」対策）
+//   5. ストリーミング音源は、止めた時点で必ず開始位置へ戻しておく
+//      （再生時に頭出しが間に合わず途中から鳴るのを防ぐ）
 //
 //  信号の流れ
 //      音源 ─> voiceGain（曲ごとの音量／フェード）
@@ -22,7 +26,10 @@ export class AudioEngine {
     this.loaded = new Map();   // cueId -> { mode, buffer|el, node, gain, duration }
     this.voices = new Map();   // voiceId -> voice
     this.seq = 0;
+    this.keepAlive = null;
+    this.keepAliveOn = true;
     this.onChange = () => {};
+    this.onStateChange = () => {};
   }
 
   // ---------- 初期化 ----------
@@ -33,6 +40,11 @@ export class AudioEngine {
     this.master = this.ctx.createGain();
     this.master.gain.value = 1;
     this.master.connect(this.ctx.destination);
+    // 何かの拍子に音声エンジンが止まったら、自動で復帰させる
+    this.ctx.addEventListener("statechange", () => {
+      if (this.ctx.state !== "running") this.ctx.resume().catch(() => {});
+      this.onStateChange();
+    });
     return this.ctx;
   }
 
@@ -49,6 +61,42 @@ export class AudioEngine {
       s.connect(this.master);
       s.start(0);
     } catch { /* 無視 */ }
+    if (this.keepAliveOn) this._startKeepAlive();
+    this.onStateChange();
+  }
+
+  get running() { return this.ctx?.state === "running"; }
+
+  // ---------- 出力を眠らせない ----------
+  //  しばらく音を出さないと ChromeOS が音声出力ストリームを閉じてしまい、
+  //  次に鳴らしたとき、開き直しの間の音が失われて「途中から」聞こえる。
+  //  そこで、聞こえないレベル（-120dB 相当）の音を鳴らし続けて出力を保持する。
+  setKeepAlive(on) {
+    this.keepAliveOn = !!on;
+    if (!this.ctx) return;
+    if (this.keepAliveOn) this._startKeepAlive();
+    else this._stopKeepAlive();
+  }
+
+  _startKeepAlive() {
+    if (this.keepAlive || !this.ctx) return;
+    const ctx = this.ctx;
+    const len = Math.max(2, Math.round(ctx.sampleRate * 0.25));
+    const buf = ctx.createBuffer(1, len, ctx.sampleRate);
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) data[i] = (i & 1 ? 1e-6 : -1e-6);
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    src.loop = true;
+    src.connect(ctx.destination);   // マスター音量の影響を受けないよう直結
+    try { src.start(0); } catch { /* 無視 */ }
+    this.keepAlive = src;
+  }
+
+  _stopKeepAlive() {
+    if (!this.keepAlive) return;
+    try { this.keepAlive.stop(); this.keepAlive.disconnect(); } catch { /* 無視 */ }
+    this.keepAlive = null;
   }
 
   get outputLatencyMs() {
@@ -117,11 +165,14 @@ export class AudioEngine {
     node.connect(gain);
     gain.connect(this.group(cue.listId));
     el.load();
+    const entry = { mode: "stream", el, node, gain, url: probeUrl, duration, bytes: 0, armAt: cue.startSec || 0 };
     el.addEventListener("ended", () => {
       for (const [vid, v] of this.voices) if (v.cueId === cue.id) this._drop(vid);
+      this._arm(entry);          // 鳴り終わったら次に備えて頭出ししておく
     });
-    this.loaded.set(cue.id, { mode: "stream", el, node, gain, url: probeUrl, duration, bytes: 0 });
+    this.loaded.set(cue.id, entry);
     await waitCanPlayThrough(el);
+    this._arm(entry);
     return { mode: "stream", duration: Number.isFinite(el.duration) ? el.duration : duration, bytes: 0 };
   }
 
@@ -134,6 +185,44 @@ export class AudioEngine {
       if (l.url) URL.revokeObjectURL(l.url);
     }
     this.loaded.delete(cueId);
+  }
+
+  /**
+   * ストリーミング音源を「開始位置で待機」の状態にしておく。
+   * 鳴らす瞬間に頭出しをすると、先読みデータが破棄されていた場合に
+   * 間に合わず前回の位置から鳴ってしまうため、止めた時点で戻しておく。
+   */
+  armCue(cue) {
+    const l = this.loaded.get(cue.id);
+    if (!l || l.mode !== "stream") return;
+    l.armAt = cue.startSec || 0;
+    const playing = [...this.voices.values()].some((v) => v.cueId === cue.id && !v.stopping);
+    if (!playing) this._arm(l);
+  }
+
+  _arm(l) {
+    if (!l || l.mode !== "stream") return;
+    const pos = l.armAt || 0;
+    try {
+      if (Math.abs(l.el.currentTime - pos) > 0.02) l.el.currentTime = pos;
+    } catch { /* 無視 */ }
+  }
+
+  /** 頭出しが必要なときは、その完了を待ってから鳴らす */
+  _startStream(l, start, voiceId) {
+    const el = l.el;
+    const begin = () => {
+      if (!this.voices.has(voiceId)) return;      // 鳴らす前に止められていた
+      const p = el.play();
+      if (p && p.catch) p.catch(() => {});
+    };
+    if (Math.abs(el.currentTime - start) <= 0.05) { begin(); return; }
+
+    let done = false;
+    const fire = () => { if (!done) { done = true; el.removeEventListener("seeked", fire); begin(); } };
+    el.addEventListener("seeked", fire, { once: true });
+    setTimeout(fire, 400);                        // 頭出しが返ってこない場合の保険
+    try { el.currentTime = start; } catch { fire(); }
   }
 
   isReady(cueId) { return this.loaded.has(cueId); }
@@ -200,22 +289,21 @@ export class AudioEngine {
       l.gen = (l.gen || 0) + 1;      // 古いフェードアウトの後始末が
       const gain = l.gain;           // この再生を止めないようにする印
       applyEnvelope(gain.gain, now, vol, fadeIn, playLen, autoFadeOut);
-      try { l.el.currentTime = start; } catch { /* 無視 */ }
-      const p = l.el.play();
-      if (p && p.catch) p.catch(() => {});
       const voice = {
         id, cueId: cue.id, listId: cue.listId, kind: "stream", el: l.el, gain, gen: l.gen,
         startedAt: now, startOffset: start, playEnd: playEnd || total, timers,
       };
+      this.voices.set(id, voice);
+      this._startStream(l, start, id);
       if (playLen != null && endRaw != null) {
         timers.push(setTimeout(() => {
           if (this.voices.get(id) === voice) {
-            try { l.el.pause(); l.el.currentTime = start; } catch { /* 無視 */ }
+            try { l.el.pause(); } catch { /* 無視 */ }
+            this._arm(l);
             this._drop(id);
           }
         }, playLen * 1000 + 20));
       }
-      this.voices.set(id, voice);
     }
     this.onChange();
     return id;
@@ -247,7 +335,8 @@ export class AudioEngine {
         // すでに同じキューが再生し直されていたら、止めずに抜ける
         const l = this.loaded.get(v.cueId);
         if (!l || l.gen === v.gen) {
-          try { v.el.pause(); v.el.currentTime = 0; } catch { /* 無視 */ }
+          try { v.el.pause(); } catch { /* 無視 */ }
+          this._arm(l);
         }
       }
       this._drop(voiceId);

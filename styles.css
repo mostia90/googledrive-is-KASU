@@ -55,6 +55,7 @@ h2, h3 { margin: 0; font-size: 14px; letter-spacing: .04em; }
 .brand-name { letter-spacing: .06em; }
 .badge {
   font-size: 12px; padding: 4px 10px; border-radius: 999px;
+  font-family: inherit; cursor: pointer;
   border: 1px solid var(--line); background: var(--bg-3); color: var(--fg-dim);
   white-space: nowrap;
 }

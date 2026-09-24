@@ -41,6 +41,7 @@ export const DEFAULT_SETTINGS = {
   defaultFadeOut: 2,        // 既定のフェードアウト（秒）
   bufferThresholdSec: 60,   // これ以下の長さはメモリ展開（遅延ほぼゼロ）
   stopAllFadeSec: 0.12,     // 全停止時の短いフェード（プチッというノイズ防止）
+  keepAudioAlive: true,     // 聞こえない音を鳴らし続けて出力を保持（頭切れ防止）
   clientId: "",
   apiKey: "",
 };

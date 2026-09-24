@@ -18,7 +18,8 @@
     <span class="brand-mark" aria-hidden="true">▶</span>
     <span class="brand-name">KASU Sound</span>
   </div>
-  <div id="ready-badge" class="badge badge-wait" title="ローカル保存済み／再生準備が完了したキュー数">準備中…</div>
+  <button id="ready-badge" class="badge badge-wait" type="button"
+  title="ローカル保存済み／再生準備が完了したキュー数（クリックで音声出力を起こし直します）">準備中…</button>
   <div class="spacer"></div>
   <button id="btn-drive" class="btn" type="button">Driveから取り込み</button>
   <button id="btn-local" class="btn" type="button">ファイルから追加</button>
@@ -146,6 +147,15 @@
       <input id="set-autoplay" type="checkbox">
       <span>キューを選んだとき／取り込んだときに自動で再生する</span>
     </label>
+    <label class="field check">
+      <input id="set-keepalive" type="checkbox">
+      <span>音声出力を常に確保しておく（推奨）</span>
+    </label>
+    <p class="muted small">
+      しばらく音を出さないでいると、Chromebook が音声出力を一時停止し、
+      次に鳴らしたときに曲の頭が欠けることがあります。これを防ぐため、
+      聞こえないレベルの音を鳴らし続けます。切ると電池の持ちがわずかに良くなります。
+    </p>
     <div class="field-grid">
       <label class="field">
         <span class="field-label">既定のフェードイン（秒）</span>
