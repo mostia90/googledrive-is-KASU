@@ -59,6 +59,8 @@ async function init() {
   updateReadyBadge();
 
   engine.onChange = () => { renderVoices(); renderLists(); };
+  engine.onStateChange = () => updateReadyBadge();
+  engine.setKeepAlive(state.settings.keepAudioAlive);
 
   // 最初の操作で音声出力を起こす（ブラウザの自動再生制限への対応）
   const unlock = () => {
@@ -68,6 +70,10 @@ async function init() {
   };
   window.addEventListener("pointerdown", unlock);
   window.addEventListener("keydown", unlock);
+
+  // タブを離れて戻ったときなどに、音声出力が止まっていたら起こし直す
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) engine.unlock(); });
+  window.addEventListener("focus", () => engine.unlock());
 
   setInterval(tick, 100);
 }
@@ -477,6 +483,11 @@ function updateReadyBadge() {
   const total = cues.length;
   const ready = cues.filter((c) => engine.isReady(c.id)).length;
   const lat = engine.outputLatencyMs;
+  if (engine.ctx && !engine.running) {
+    badge.className = "badge badge-ng";
+    badge.textContent = "音声出力が止まっています（クリックで復帰）";
+    return;
+  }
   if (!total) { badge.className = "badge badge-wait"; badge.textContent = "音源なし"; return; }
   if (ready === total) {
     badge.className = "badge badge-ok";
@@ -513,6 +524,12 @@ function tick() {
 // ============================================================
 function wireStaticEvents() {
   // --- 取り込み ---
+  $("ready-badge").addEventListener("click", async () => {
+    await engine.unlock();
+    updateReadyBadge();
+    toast(engine.running ? "音声出力を起こしました。" : "音声出力を起こせませんでした。", !engine.running);
+    blurActive();
+  });
   $("btn-local").addEventListener("click", () => $("file-input").click());
   $("file-input").addEventListener("change", (e) => { addLocalFiles(e.target.files); e.target.value = ""; });
   $("btn-drive").addEventListener("click", addFromDrive);
@@ -601,6 +618,11 @@ function wireStaticEvents() {
   $("btn-settings").addEventListener("click", async () => { await refreshStorageInfo(); $("dlg-settings").showModal(); });
   $("set-autoplay").addEventListener("change", (e) => {
     state.settings.autoPlayOnSelect = e.target.checked; $("chk-autoplay").checked = e.target.checked; save();
+  });
+  $("set-keepalive").addEventListener("change", (e) => {
+    state.settings.keepAudioAlive = e.target.checked;
+    engine.setKeepAlive(e.target.checked);
+    save();
   });
   $("set-fadein").addEventListener("change", (e) => { state.settings.defaultFadeIn = num(e.target.value, 0); save(); });
   $("set-fadeout").addEventListener("change", (e) => { state.settings.defaultFadeOut = num(e.target.value, 2); save(); });
@@ -873,6 +895,7 @@ function setTrim(which, sec) {
       cue.endSec = round1(e2);
     }
   }
+  engine.armCue(cue);   // ストリーミング音源の待機位置も合わせる
   render(); save();
 }
 
@@ -902,6 +925,7 @@ function applySettingsToUI() {
   const s = state.settings;
   $("chk-autoplay").checked = s.autoPlayOnSelect;
   $("set-autoplay").checked = s.autoPlayOnSelect;
+  $("set-keepalive").checked = s.keepAudioAlive !== false;
   $("master-vol").value = Math.round(s.masterVolume * 100);
   $("master-val").textContent = Math.round(s.masterVolume * 100) + "%";
   $("set-fadein").value = s.defaultFadeIn;
@@ -910,6 +934,7 @@ function applySettingsToUI() {
   $("set-client-id").value = s.clientId || "";
   $("set-api-key").value = s.apiKey || "";
   engine.setMasterVolume(s.masterVolume);
+  engine.setKeepAlive(s.keepAudioAlive !== false);
   for (const l of state.lists) engine.setGroupVolume(l.id, l.volume);
 }
 
