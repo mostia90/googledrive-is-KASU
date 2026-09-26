@@ -118,6 +118,7 @@ h2, h3 { margin: 0; font-size: 14px; letter-spacing: .04em; }
   border: 0; cursor: pointer; font-family: inherit;
 }
 .list-key:hover { filter: brightness(1.15); }
+.list-key.playing { background: var(--stop); color: #fff; }
 .list-key:active { transform: translateY(1px); }
 .list-next {
   display: flex; align-items: baseline; gap: 7px;
@@ -240,6 +241,7 @@ input[type="checkbox"] { width: 17px; height: 17px; accent-color: var(--go); }
 .btn-stop { background: var(--stop); border-color: var(--stop); color: #fff; font-weight: 700; padding: 12px 20px; font-size: 15px; }
 .btn-stop:hover { background: #f05a54; }
 .key-hints { display: flex; gap: 14px; font-size: 12px; color: var(--fg-dim); flex-wrap: wrap; }
+.hint-note { color: #6f7b8f; }
 .key-hints kbd {
   display: inline-block; padding: 1px 6px; margin-right: 4px;
   border-radius: 5px; background: var(--bg-3); border: 1px solid var(--line);

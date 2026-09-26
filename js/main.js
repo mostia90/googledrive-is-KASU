@@ -213,16 +213,31 @@ function playCue(cue, opts) {
   render();
 }
 
-/** GO：そのリストの NEXT を再生して、ポインタを 1 つ進める */
+/**
+ * GO：そのリストの音が鳴っていれば止める。鳴っていなければ NEXT を再生して
+ * ポインタを 1 つ進める。押し間違いで音が二重に鳴る事故を防ぐため。
+ * （自然に消したいときは F キー／フェードアウトボタン）
+ */
 function go(listId) {
   const list = listById(listId);
+  state.focusedList = list.id;
+
+  if (isListPlaying(list.id)) {
+    engine.stopList(list.id, state.settings.stopAllFadeSec);
+    render();
+    return;
+  }
+
   const i = state.nextIndex[list.id] ?? 0;
   const cue = list.cues[i];
   if (!cue) { toast(`「${list.name}」は最後まで進んでいます（Home で先頭へ）。`); return; }
   playCue(cue);
   state.nextIndex[list.id] = Math.min(i + 1, list.cues.length);
-  state.focusedList = list.id;
   render();
+}
+
+function isListPlaying(listId) {
+  return engine.activeVoices().some((v) => v.listId === listId && v.id !== state.previewId);
 }
 
 function stopAll() {
@@ -287,7 +302,7 @@ function buildPanes() {
         <span class="list-num">${"①②③"[i] || ""}</span>
         <input class="list-name" data-name maxlength="20" value="${escapeHtml(list.name)}">
         <button class="list-key" data-act="go" type="button"
-          title="クリック、または ${LIST_KEYS[i]?.label || ""} キーでこのリストの NEXT を再生">${LIST_KEYS[i]?.label || ""}</button>
+          data-label="${LIST_KEYS[i]?.label || ""}">${LIST_KEYS[i]?.label || ""}</button>
       </div>
       <div class="list-next"><span class="nx">NEXT</span><span class="nm" data-next>—</span></div>
       <ol class="cuelist" data-cuelist></ol>
@@ -314,11 +329,21 @@ function buildPanes() {
 function render() { renderLists(); renderVoices(); renderEditor(); }
 
 function renderLists() {
-  const playing = new Set(engine.activeVoices().filter((v) => v.id !== state.previewId).map((v) => v.cueId));
+  const live = engine.activeVoices().filter((v) => v.id !== state.previewId);
+  const playing = new Set(live.map((v) => v.cueId));
+  const playingLists = new Set(live.map((v) => v.listId));
   state.lists.forEach((list) => {
     const pane = paneOf(list.id);
     if (!pane) return;
     pane.classList.toggle("focused", list.id === state.focusedList);
+
+    const keyBtn = pane.querySelector(".list-key");
+    const on = playingLists.has(list.id);
+    const label = keyBtn.dataset.label || "";
+    keyBtn.classList.toggle("playing", on);
+    keyBtn.title = on
+      ? `${label} キー（またはクリック）で「${list.name}」を停止`
+      : `${label} キー（またはクリック）で「${list.name}」の NEXT を再生`;
 
     const ni = state.nextIndex[list.id] ?? 0;
     const nextCue = list.cues[ni];
@@ -463,11 +488,13 @@ function renderListSelect() {
 function renderKeyHints() {
   $("key-hints").innerHTML = state.lists.map((l, i) =>
     `<span><kbd>${LIST_KEYS[i]?.label || ""}</kbd>${escapeHtml(l.name)}</span>`).join("")
-    + '<span><kbd>Space</kbd>選択中のリスト</span><span><kbd>F</kbd>フェードアウト</span>';
+    + '<span><kbd>Space</kbd>選択中のリスト</span>'
+    + '<span class="hint-note">鳴っている間にもう一度押すと停止</span>'
+    + '<span><kbd>F</kbd>フェードアウト</span>';
 
   $("help-keys").innerHTML = [
-    ...state.lists.map((l, i) => [LIST_KEYS[i]?.label || "", `「${l.name}」の NEXT を再生`]),
-    ["Space", "今選んでいるリストの NEXT を再生"],
+    ...state.lists.map((l, i) => [LIST_KEYS[i]?.label || "", `「${l.name}」の NEXT を再生／鳴っていれば停止`]),
+    ["Space", "今選んでいるリストの NEXT を再生／鳴っていれば停止"],
     ["Esc", "全停止"],
     ["← →", "操作するリストを切り替え"],
     ["↑ ↓", "NEXT を 1 つ上／下へ"],
@@ -680,6 +707,13 @@ function wireStaticEvents() {
   // --- キーボード ---
   document.addEventListener("keydown", onKeyDown);
 
+  // 音量スライダーをマウスで動かし終えたらフォーカスを外す
+  // （そのままキーを押したときに、再生ではなく音量が変わるのを防ぐ）
+  document.addEventListener("pointerup", (e) => {
+    const el = e.target;
+    if (el instanceof HTMLInputElement && el.type === "range") el.blur();
+  });
+
   // --- 再生中の誤操作防止 ---
   window.addEventListener("beforeunload", (e) => {
     if (engine.activeVoices().length) { e.preventDefault(); e.returnValue = ""; }
@@ -823,36 +857,46 @@ function enableDragReorder(root) {
 
 function onKeyDown(e) {
   const t = e.target;
-  const typing = t && (t.tagName === "INPUT" || t.tagName === "SELECT" || t.tagName === "TEXTAREA");
+  const tag = t?.tagName;
+  const type = String(t?.type || "").toLowerCase();
+  // 文字や数値を入力しているときだけ、キー操作を横取りしない。
+  // スライダーやチェックボックスにフォーカスが残っていても再生できるようにする。
+  const textEntry = tag === "TEXTAREA" || tag === "SELECT" ||
+    (tag === "INPUT" && !["range", "checkbox", "radio", "button", "submit", "file"].includes(type));
+  const onSlider = tag === "INPUT" && type === "range";
   const dialogOpen = $("dlg-settings").open;
 
-  if (e.code === "Escape" && !dialogOpen) { e.preventDefault(); stopAll(); return; }
-  if (typing || dialogOpen) return;
+  if (e.code === "Escape" && !dialogOpen) { e.preventDefault(); blurActive(); stopAll(); return; }
+  if (textEntry || dialogOpen) return;
 
   const keyIdx = LIST_KEYS.findIndex((k) => k.code === e.code);
-  if (keyIdx >= 0 && state.lists[keyIdx]) { e.preventDefault(); go(state.lists[keyIdx].id); return; }
+  if (keyIdx >= 0 && state.lists[keyIdx]) { e.preventDefault(); blurActive(); go(state.lists[keyIdx].id); return; }
 
   switch (e.code) {
     case "Space":
-      e.preventDefault(); go(state.focusedList); break;
+      e.preventDefault(); blurActive(); go(state.focusedList); break;
     case "ArrowDown":
+      if (onSlider) return;          // スライダー操作中は音量調整を優先
       e.preventDefault(); moveNext(1); break;
     case "ArrowUp":
+      if (onSlider) return;
       e.preventDefault(); moveNext(-1); break;
     case "ArrowLeft":
+      if (onSlider) return;
       e.preventDefault(); focusShift(-1); break;
     case "ArrowRight":
+      if (onSlider) return;
       e.preventDefault(); focusShift(1); break;
     case "Home": {
-      e.preventDefault();
+      e.preventDefault(); blurActive();
       state.nextIndex[state.focusedList] = 0;
       render();
       break;
     }
     case "Enter":
-      e.preventDefault(); playCue(selectedCue()); break;
+      e.preventDefault(); blurActive(); playCue(selectedCue()); break;
     case "KeyF": {
-      e.preventDefault();
+      e.preventDefault(); blurActive();
       const v = currentVoice();
       if (v) fadeVoice(v.id);
       break;
